@@ -7,8 +7,8 @@ FILES=("$DIR"/*.wav "$DIR"/*.m4a "$DIR"/*.mp3)
 [ ${#FILES[@]} -eq 0 ] && { echo "No takes yet in $DIR"; exit 0; }
 
 HPCHAIN="highpass=f=9000:poles=2,highpass=f=9000:poles=2,highpass=f=9000:poles=2,highpass=f=9000:poles=2"
-printf '%-26s %6s %7s %7s %7s %5s %5s  %s\n' TAKE MIN PEAK RMS FLOOR SNR HFGAP VERDICT
-printf '%.0s-' {1..96}; echo
+printf '%-34s %6s %7s %7s %7s %5s %5s  %s\n' TAKE MIN PEAK RMS FLOOR SNR HFGAP VERDICT
+printf '%.0s-' {1..104}; echo
 for f in "${FILES[@]}"; do
   S=$(ffmpeg -hide_banner -i "$f" -af astats=metadata=1:reset=0 -f null - 2>&1)
   P=$(echo "$S" | grep -m1 "Peak level dB:"  | sed 's/.*: *//')
@@ -17,18 +17,28 @@ for f in "${FILES[@]}"; do
   H=$(ffmpeg -hide_banner -i "$f" -af "$HPCHAIN,astats=metadata=1:reset=0" -f null - 2>&1 \
        | grep -m1 "RMS level dB:" | sed 's/.*: *//')
   D=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$f")
-  awk -v n="$(basename "${f%.*}")" -v p="$P" -v r="$R" -v fl="$N" -v d="$D" -v h="$H" 'BEGIN{
-    snr=r-fl; hg=r-h; v="ok"
-    if (p > -1)         v="CLIPPED"
-    else if (hg > 55)   v="NARROWBAND"
-    else if (snr < 30)  v="too noisy"
-    else if (p < -12)   v="too quiet"
-    else if (hg > 45)   v="dull/weak HF"
-    else if (snr >= 45) v="GOOD"
-    printf "%-26.26s %6.1f %7.1f %7.1f %7.1f %5.0f %5.0f  %s\n", n, d/60, p, r, fl, snr, hg, v
+  awk -v n="$(basename "${f%.*}")" -v p="$P" -v r="$R" -v fl="$N" -v d="$D" -v h="$H" '
+  function isnum(x) { return x ~ /^-?[0-9]+(\.[0-9]+)?$/ }
+  BEGIN{
+    hg=r-h
+    # A non-numeric noise floor (-inf) means the mic gated to digital silence, so
+    # signal-to-noise is unmeasurable - not infinitely good. Sort it to the bottom.
+    if (isnum(fl)) { snr=r-fl; snrs=sprintf("%5.0f", snr); fls=sprintf("%7.1f", fl) }
+    else           { snr=-1;   snrs="  n/a"; fls="   -inf" }
+    v="ok"
+    if (p > -1)          v="CLIPPED"
+    else if (hg > 55)    v="NARROWBAND"
+    else if (!isnum(fl)) v="GATED"
+    else if (snr < 30)   v="too noisy"
+    else if (p < -12)    v="too quiet"
+    else if (hg > 45)    v="dull/weak HF"
+    else if (snr >= 45)  v="GOOD"
+    printf "%-34.34s %6.1f %7.1f %7.1f %s %s %5.0f  %s\n", n, d/60, p, r, fls, snrs, hg, v
   }'
 done | sort -k6 -rn
 echo
 echo "Ranked by signal-to-noise. Want peak -6 to -3, SNR 45+, HFGAP under 45."
+echo "SNR n/a means the noise floor read as -inf: the mic gates to digital silence,"
+echo "so the take carries no measurable room tone to compare. Judge it by ear."
 echo "HFGAP = how far energy above 9kHz sits below overall level. Over 55 means a"
 echo "narrowband codec (Bluetooth) upsampled to 48k - disqualifying regardless of SNR."
